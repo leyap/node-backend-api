@@ -21,47 +21,40 @@ class UserController {
 
     static async getCaptcha(ctx: Context) {
         const {capid, img} = await UserController.buildCpatcha()
+        ctx.status = 200
         return ctx.body = {
-            r: 0,
-            data: {
-                capid,
-                img
-            }
+            capid,
+            img
         }
     }
 
     static async verifyCaptcha(ctx: Context) {
         const {capid, captcha, phone} = ctx.request.body
         if (capid && (!captcha || !phone)) {
-            return ctx.body = {
-                r: 2,
-                msg: 'require captcha,phone'
-            }
-
+            ctx.status = 600
+            return ctx.body = 'require captcha,phone'
         }
         const realCode = await redis.get('captcha.' + capid)
         if (realCode === captcha) {
             if (!phone) {
-                return ctx.body = {
-                    r: 3,
-                    msg: 'require phone'
-                }
+                ctx.status = 601
+                return ctx.body = 'require phone'
             }
-            await redis.set('captcha.' + capid, phone, {'EX': 60 * 3, XX: true})
-            ctx.body = {
-                r: 0
-            }
+            await redis.set('captcha.' + capid, phone, {'EX': 60 * 5, XX: true})
+            ctx.status = 200
+            ctx.body = 'ok'
         } else {
+            let msg = '';
             if (capid && !realCode) {
+                msg = 'captcha input error!'
                 await redis.del('captcha.' + capid)
             }
             const {capid: newCapid, img} = await UserController.buildCpatcha()
+            ctx.status = 220
             ctx.body = {
-                r: 1,
-                data: {
-                    capid: newCapid,
-                    img
-                }
+                msg,
+                capid: newCapid,
+                img
             }
         }
     }
@@ -69,24 +62,34 @@ class UserController {
     static async getPhoneCode(ctx: Context) {
         const {phone} = ctx.request.body || {}
         if (!phone) {
-            return ctx.body = {
-                r: 2,
-                msg: '请输入合法的手机号！'
-            }
-        }
-        const codeLimitKey = 'codeLimit.' + (new Date()).toLocaleDateString() + '.' + phone
-        const codeSendCount = Number(await redis.get(codeLimitKey))
-
-        if (codeSendCount > 3) {
-            return ctx.body = {
-                r: 3,
-                msg: '发送太频繁！请次日再发！'
-            }
+            ctx.status = 221
+            return ctx.body = '请输入正确的手机号！'
         }
 
-        let code = Math.random().toString().slice(3, 7)
+        // const clientIp = Helper.getClientIp(ctx)
+        // const codeIpDayLimitKey = 'codeIpLimit.' + '.' + clientIp
+        // if (await redis.get(codeIpDayLimitKey)) {
+        //     ctx.status = 224
+        //     return ctx.body = '发送太频繁！请改日再发！！'
+        // }
+
+        const codeFreqLimitKey = 'codeFreq.' + '.' + phone
+        if (await redis.get(codeFreqLimitKey)) {
+            ctx.status = 222
+            return ctx.body = '发送太频繁！请稍后重试！'
+        }
+
+        const codeDayLimitKey = 'codeLimit.' + (new Date()).toLocaleDateString() + '.' + phone
+        const codeSendCount = Number(await redis.get(codeDayLimitKey))
+
+        if (codeSendCount > 10) {
+            ctx.status = 223
+            return ctx.body = '发送太频繁！请次日再发！'
+        }
+
+        let code = Math.random().toString().slice(3, 9)
         if (config.dev) {
-            code = '1234'
+            code = '123456'
         }
 
         let r: any = {}
@@ -96,41 +99,45 @@ class UserController {
             r = await Helper.sendPhoneCode(phone, code)
         }
 
+        await redis.set(codeFreqLimitKey, 1, {EX: 60})
+
         // const r = 0
         // await redis.set('code.' + phone, code, {'EX': 60 * 3}, 'limit.'+(new Date()).getDate()+'.'+phone, "1"")
         // await redis.multi().set('code.' + phone, code, {'EX': 60 * 3})
         //     .incr('codeLimit.'+(new Date()).toLocaleDateString()+ '.'+phone,1,{'EX': '24h'} )
         //     .exec()
-        await redis.set('code.' + phone, code, {'EX': 60 * 3})
-        if (await redis.get(codeLimitKey)) {
-            await redis.incr(codeLimitKey)
+        await redis.set('code.' + phone, code, {'EX': 60 * 5})
+        if (await redis.get(codeDayLimitKey)) {
+            await redis.incr(codeDayLimitKey)
         } else {
-            await redis.set(codeLimitKey, 1, {'EX': 60 * 60 * 24})
+            await redis.set(codeDayLimitKey, 1, {'EX': 60 * 60 * 24})
         }
 
         if (r === 0) {
-            ctx.body = {
-                r: 0,
-                msg: '发送成功！请注意查收！'
-            }
+            ctx.status = 200
+            return ctx.body = '发送成功！请注意查收短信！'
         } else {
-            ctx.body = {
-                r: 1,
-                msg: '发送失败！请稍后重试！'
-            }
+            ctx.status = 220
+            return ctx.body = '发送失败！请稍后重试！'
         }
     }
 
     static async loginOr(ctx: Context) {
         const {phone, code, capid} = ctx.request.body || {}
         if (!phone || !code || !capid) {
-            return ctx.body = {
-                r: 2,
-                msg: 'require: phone,code,capid'
-            }
+            ctx.status = 220
+            // return ctx.body = 'require: phone,code,capid'
+            return ctx.body = '验证码已过期！'
         }
+
         const realCode = await redis.get('code.' + phone)
         const markPhone = await redis.get('captcha.' + capid)
+
+        if (!realCode || !markPhone) {
+            ctx.status = 222
+            return ctx.body = '验证码已过期！'
+        }
+
         if (code === realCode && phone === markPhone) {
             await redis.del('code.' + phone)
             await redis.del('captcha.' + capid)
@@ -138,14 +145,18 @@ class UserController {
             if (user) { // 用户已存在
                 const {username, email, id} = user
                 const token = sign({id})
-                return ctx.body = {r: 0, data: {username, id, email, token}}
+                ctx.status = 200
+                return ctx.body = {username, id, email, token}
             } else {    //用户不存在，先添加
                 const user = await UserService.register({phone})
                 const token = sign({id: user.id})
-                return ctx.body = {r: 0, data: {id: user.id, token}}
+                ctx.status = 200
+                return ctx.body = {id: user.id, token}
             }
         } else {
-            ctx.body = {r: 1, msg: "验证码错误！"}
+            console.log(code, realCode, phone, markPhone)
+            ctx.status = 221
+            ctx.body = "验证码错误！"
         }
     }
 
@@ -216,43 +227,38 @@ class UserController {
     }
 
     static async getMyProfile(ctx: Context) {
+        console.log(ctx.state)
         const id = ctx.state.user.id
         if (!id) {
-            return ctx.body = {r: 1, msg: 'require id'}
+            ctx.status = 220
+            return ctx.body = 'require id'
         }
         try {
             const profile = await UserService.getUserInfo(id)
-            ctx.body = {
-                r: 0,
-                data: profile
-            }
+            ctx.status = 200
+            ctx.body = profile
         } catch (e) {
-            ctx.body = {
-                r: 1,
-                msg: e.message
-            }
+            ctx.status = 221
+            ctx.body = e.message
         }
     }
 
     static async getUserInfo(ctx: Context) {
         const {id} = ctx.request.body || {}
         if (!id) {
-            return ctx.body = {r: 1, msg: 'require id'}
+            ctx.status = 220
+            return ctx.body = 'require id'
         }
 
         const userInfo = await UserService.getUserInfo(id)
-        ctx.body = {
-            r: 0,
-            data: userInfo
-        }
+        ctx.status = 200
+        ctx.body = userInfo
     }
 
     static async getUsers(ctx: Context) {
         const list = await UserService.getUsers()
-        ctx.body = {
-            r: 0,
-            data: list
-        }
+        ctx.status = 200
+        ctx.body = list
     }
 }
 

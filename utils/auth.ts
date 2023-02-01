@@ -11,12 +11,12 @@ function verify(token: string) {
         const decoded = jwt.verify(token, config.jwt.secret, {complete: true}) as JwtPayload
         console.log(decoded)
         return {
-            user: decoded,
+            decoded,
             error: null
         }
     } catch (err) {
         return {
-            user: null,
+            decoded: null,
             error: err
         }
 

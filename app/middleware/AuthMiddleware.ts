@@ -18,7 +18,7 @@ function AuthMiddleware(ctx: Context, next: Next) {
             }
             return
         }
-        const {user, error} = verify(token)
+        const {decoded, error} = verify(token)
         if (error) {
             if (error.name === 'TokenExpiredError') {
                 // ctx.status = 301
@@ -33,7 +33,7 @@ function AuthMiddleware(ctx: Context, next: Next) {
                 }
             }
         }
-        ctx.state.user = user
+        ctx.state.user = decoded.payload
         return next()
     } else {
         logger.info('auth', 'require authorization')
