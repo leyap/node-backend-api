@@ -1,0 +1,17 @@
+{
+  "watch": [
+    "app/**/*.ts",
+    "./index.ts",
+    "utils/**/*.ts"
+  ],
+  "ignore": [
+    "node_modules"
+  ],
+  "exec": "ts-node index.ts",
+  "ext": ".ts",
+  "verbose": true,
+  "events": {
+    "restart": "osascript -e 'display notification \"restart\" with title \"nodemon\"'",
+    "crash": "say shit"
+  }
+}
