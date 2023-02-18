@@ -34,9 +34,9 @@ app.use(cors({
 }))
 
 app.use(ErrorMiddleware)
-if (config.dev) { //log4js error in pm2
+// if (config.dev) { //log4js error in pm2
     app.use(AccessLogMiddleware);
-}
+// }
 
 app.use(KoaBody({
     multipart: true,

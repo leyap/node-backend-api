@@ -8,7 +8,9 @@ configure({
     categories: {
         default: {appenders: ["cheese"], level: "info"},
         access: {appenders: ["access"], level: "info"}
-    }
+    },
+    pm2: true,
+    pm2InstanceVar: "isMaster", // 与pm2的instance_var对应
 })
 
 export const accessLogger = getLogger('access')

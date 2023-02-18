@@ -1,14 +1,14 @@
 import {Context} from "koa"
 import logger from "../logger"
 import {hash, hashVerify, sign} from "../../utils/auth"
-import LoginService from "../db/UserService"
-import config from "../config"
 import UserService from "../db/UserService"
+import config from "../config"
 import redis from '../redis'
 import httpClient from "../../utils/request";
 import Helper from "../helper";
 import {getCaptchaImageGif} from "../../utils/captcha";
 import {randomUUID} from "crypto";
+import Utils from "../../utils";
 
 class UserController {
 
@@ -138,6 +138,12 @@ class UserController {
             return ctx.body = '验证码已过期！'
         }
 
+        const codeErrorCount = Number(await redis.get('codeErrorLimit.' + phone + '.' + realCode))
+        if (codeErrorCount > 3) {
+            ctx.status = 223
+            return ctx.body = '验证码已失效！请重新获取！'
+        }
+
         if (code === realCode && phone === markPhone) {
             await redis.del('code.' + phone)
             await redis.del('captcha.' + capid)
@@ -148,15 +154,39 @@ class UserController {
                 ctx.status = 200
                 return ctx.body = {username, id, email, token}
             } else {    //用户不存在，先添加
-                const user = await UserService.register({phone})
-                const token = sign({id: user.id})
+                const userRes = await UserService.register({phone})
+                const token = sign({id: userRes.id})
                 ctx.status = 200
-                return ctx.body = {id: user.id, token}
+                return ctx.body = {id: userRes.id, token}
             }
         } else {
-            console.log(code, realCode, phone, markPhone)
+            if (await redis.get('codeErrorLimit.' + phone + '.' + realCode)) {
+                await redis.incr('codeErrorLimit.' + phone + '.' + realCode)
+            } else {
+                await redis.set('codeErrorLimit.' + phone + '.' + realCode, 1, {EX: 60 * 10})
+            }
             ctx.status = 221
             ctx.body = "验证码错误！"
+        }
+    }
+
+    static async setupPassword(ctx: Context) {
+        const {password} = ctx.request.body
+        if (!password || password.length < 6) {
+            ctx.status = 220
+            return ctx.body = "密码长度至少6位"
+        }
+        const psHash = await hash(password + config.psSalt)
+        try {
+            const res = await UserService.updatePassword({
+                id: ctx.state.user.id,
+                password: psHash
+            })
+            ctx.status = 200
+            ctx.body = 'ok'
+        } catch (e) {
+            ctx.status = 220
+            ctx.body = 'error'
         }
     }
 
@@ -168,7 +198,7 @@ class UserController {
                 msg: 'require username and password!'
             }
         }
-        const user = await LoginService.getUserByName(username)
+        const user = await UserService.getUserByName(username)
         if (!user) {
             return ctx.body = {r: 1, msg: "username or password error"}
         }
@@ -198,11 +228,11 @@ class UserController {
         }
         const psHash = await hash(username + email + password + config.psSalt)
         try {
-            const r = await LoginService.register({
+            const userRes = await UserService.register({
                 username, email, password: psHash
             })
-            const token = sign({id: r.id})
-            ctx.body = {username, id: r.id, email, token}
+            const token = sign({id: userRes.id})
+            ctx.body = {username, id: userRes.id, email, token}
         } catch (e) {
             if (e.code === 'P2002') {
                 let r = 4003;
@@ -259,6 +289,81 @@ class UserController {
         const list = await UserService.getUsers()
         ctx.status = 200
         ctx.body = list
+    }
+
+    static async checkUsername(ctx: Context) {
+        const username = ctx.params.username
+        if (!username) {
+            ctx.status = 220
+            ctx.body = "require username"
+        }
+        const res = await UserService.checkUsername(username)
+        ctx.status = 200
+        if (res) {
+            ctx.body = {exist: true}
+        } else {
+            ctx.body = {exist: false}
+        }
+    }
+
+    static async checkUseremail(ctx: Context) {
+        const email = ctx.params.email
+        if (!email) {
+            ctx.status = 220
+            ctx.body = "require email"
+        }
+        const res = await UserService.checkUseremail(email)
+        ctx.status = 200
+        if (res) {
+            ctx.body = {exist: true}
+        } else {
+            ctx.body = {exist: false}
+        }
+    }
+
+    static async updateUserInfo(ctx: Context) {
+        const {username, email, bio, profileId} = ctx.request.body
+        const userId = ctx.state.user.id
+
+        if (!Utils.checkUser(username)) {
+            ctx.status = 220
+            return ctx.body = '请输入合法的用户名！'
+        }
+        if (!Utils.checkEmail(email)) {
+            ctx.status = 221
+            return ctx.body = '请输入合法的Email！'
+        }
+        if (bio.length > 180) {
+            ctx.status = 223
+            return ctx.body = '个人简介字数过多！'
+        }
+
+        const [usernameRes, emailRes] = await Promise.all([
+            UserService.checkUsername(username),
+            UserService.checkUseremail(email)
+        ])
+        if (usernameRes && usernameRes.id !== userId) {
+            ctx.status = 224
+            return ctx.body = '用户名已存在！'
+        }
+        if (emailRes && emailRes.id !== userId) {
+            ctx.status = 225
+            return ctx.body = 'Email已存在！'
+        }
+
+        try {
+            const userRes = await UserService.updateUserInfo({username, email, bio, userId, profileId})
+            ctx.status = 200
+            ctx.body = userRes
+        } catch (e) {
+            logger.info('db error', e)
+            console.error(Object.getOwnPropertyNames(e))
+            console.log(e.meta)
+            console.log(e.message)
+            ctx.status = 226
+            ctx.body = e.meta.target ?? "db error!"
+        }
+
     }
 }
 
